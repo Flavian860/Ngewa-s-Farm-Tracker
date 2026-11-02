@@ -257,19 +257,24 @@ st.markdown("---")
 st.subheader("🗑️ Delete a Transaction")
 
 # Connect to database
-conn = sqlite3.connect("farm_tracker.db")
+conn = get_connection()
 cursor = conn.cursor()
 
-# Fetch existing transactions (assuming your table has an 'id' column)
-cursor.execute(
-    "SELECT id, farm_name, type, category, amount, date FROM transactions"
-)
+# Fetch transactions with proper table joins matching your database
+query = """
+    SELECT t.transaction_id, f.farm_name, c.type, c.category_name, t.amount, t.date 
+    FROM transactions t 
+    JOIN farms f ON t.farm_id = f.farm_id 
+    JOIN categories c ON t.category_id = c.category_id
+    ORDER BY t.date DESC
+"""
+cursor.execute(query)
 records = cursor.fetchall()
 
 if records:
-  # Create a dropdown list mapping transaction details to their unique ID
+  # Create a clean dropdown list mapping transaction details to their unique ID
   options = {
-      f"ID {r[0]} | {r[1]} | {r[2]} - {r[3]} | ${r[4]} ({r[5]})": r[0]
+      f"ID {r[0]} | {r[1]} | {r[2]} - {r[3]} | ${r[4]:,.2f} ({r[5]})": r[0]
       for r in records
   }
   selected_record = st.selectbox(
@@ -278,7 +283,9 @@ if records:
 
   if st.button("Delete Transaction", type="primary"):
     record_id = options[selected_record]
-    cursor.execute("DELETE FROM transactions WHERE id = ?", (record_id,))
+    cursor.execute(
+        "DELETE FROM transactions WHERE transaction_id = ?", (record_id,)
+    )
     conn.commit()
     st.success(f"Successfully deleted transaction ID {record_id}!")
     st.rerun()
