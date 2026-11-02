@@ -252,3 +252,37 @@ elif menu == "Manage Data":
       st.success("Farm details updated successfully! Please refresh.")
 
 conn.close()
+# --- DELETE TRANSACTION SECTION ---
+st.markdown("---")
+st.subheader("🗑️ Delete a Transaction")
+
+# Connect to database
+conn = sqlite3.connect("farm_tracker.db")
+cursor = conn.cursor()
+
+# Fetch existing transactions (assuming your table has an 'id' column)
+cursor.execute(
+    "SELECT id, farm_name, type, category, amount, date FROM transactions"
+)
+records = cursor.fetchall()
+
+if records:
+  # Create a dropdown list mapping transaction details to their unique ID
+  options = {
+      f"ID {r[0]} | {r[1]} | {r[2]} - {r[3]} | ${r[4]} ({r[5]})": r[0]
+      for r in records
+  }
+  selected_record = st.selectbox(
+      "Select a transaction to delete", options=list(options.keys())
+  )
+
+  if st.button("Delete Transaction", type="primary"):
+    record_id = options[selected_record]
+    cursor.execute("DELETE FROM transactions WHERE id = ?", (record_id,))
+    conn.commit()
+    st.success(f"Successfully deleted transaction ID {record_id}!")
+    st.rerun()
+else:
+  st.info("No transactions available to delete.")
+
+conn.close()
