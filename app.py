@@ -139,9 +139,9 @@ if menu == "Dashboard & Reports":
     net_profit = total_income - total_exp
 
     col1, col2, col3 = st.columns(3)
-    col1.metric("Total Income", f"${total_income:,.2f}")
-    col2.metric("Total Expenditure", f"${total_exp:,.2f}")
-    col3.metric("Net Profit", f"${net_profit:,.2f}")
+    col1.metric("Total Income", f"KSH{total_income:,.2f}")
+    col2.metric("Total Expenditure", f"KSH{total_exp:,.2f}")
+    col3.metric("Net Profit", f"KSH{net_profit:,.2f}")
 
     st.markdown("---")
 
@@ -163,7 +163,7 @@ if menu == "Dashboard & Reports":
     pivot["Net Profit"] = pivot["Income"] - pivot["Expenditure"]
 
     # Display as a formatted table
-    st.dataframe(pivot.style.format({"Income": "${:,.2f}", "Expenditure": "${:,.2f}", "Net Profit": "${:,.2f}"}), use_container_width=True)
+    st.dataframe(pivot.style.format({"Income": "KSH{:,.2f}", "Expenditure": "KSH{:,.2f}", "Net Profit": "KSH{:,.2f}"}), use_container_width=True)
 
     # Detailed logs
     st.subheader("Recent Transactions Log")
