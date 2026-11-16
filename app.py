@@ -1,51 +1,91 @@
 from datetime import datetime
-import sqlite3
 import pandas as pd
 import streamlit as st
 
-DB_NAME = "farm_tracker.db"
+# --- CONFIG & DATABASE CONNECTION ---
+st.set_page_config(
+    page_title="Multi-Farm Tracker (Live)", page_icon="🌾", layout="wide"
+)
 
 
-def get_connection():
-  return sqlite3.connect(DB_NAME, check_same_thread=False)
+@st.cache_resource
+def get_cloud_connection():
+  """Connects to a shared cloud database (or falls back to local SQLite)"""
+  db_url = st.secrets.get("DATABASE_URL", "sqlite:///farm_tracker.db")
+
+  if db_url.startswith("sqlite"):
+    import sqlite3
+
+    return sqlite3.connect("farm_tracker.db", check_same_thread=False)
+  else:
+    import psycopg2
+
+    return psycopg2.connect(db_url)
 
 
 def initialize_database():
-  """Sets up the SQLite database and populates initial farms and categories."""
-  conn = get_connection()
+  """Sets up database tables and seeds initial data if they don't exist."""
+  conn = get_cloud_connection()
   cursor = conn.cursor()
 
-  cursor.execute("""
-        CREATE TABLE IF NOT EXISTS farms (
-            farm_id INTEGER PRIMARY KEY AUTOINCREMENT,
-            farm_name TEXT UNIQUE NOT NULL,
-            location TEXT
-        )
-    """)
+  is_postgres = not hasattr(conn, "isolation_level")
 
-  cursor.execute("""
-        CREATE TABLE IF NOT EXISTS categories (
-            category_id INTEGER PRIMARY KEY AUTOINCREMENT,
-            category_name TEXT NOT NULL,
-            type TEXT CHECK(type IN ('Income', 'Expenditure')) NOT NULL,
-            sector TEXT CHECK(sector IN ('Crops', 'Livestock', 'General')) NOT NULL
-        )
-    """)
+  if is_postgres:
+    cursor.execute("""
+            CREATE TABLE IF NOT EXISTS farms (
+                farm_id SERIAL PRIMARY KEY,
+                farm_name TEXT UNIQUE NOT NULL,
+                location TEXT
+            )
+        """)
+    cursor.execute("""
+            CREATE TABLE IF NOT EXISTS categories (
+                category_id SERIAL PRIMARY KEY,
+                category_name TEXT NOT NULL,
+                type TEXT CHECK(type IN ('Income', 'Expenditure')) NOT NULL,
+                sector TEXT CHECK(sector IN ('Crops', 'Livestock', 'General')) NOT NULL
+            )
+        """)
+    cursor.execute("""
+            CREATE TABLE IF NOT EXISTS transactions (
+                transaction_id SERIAL PRIMARY KEY,
+                farm_id INTEGER REFERENCES farms(farm_id),
+                category_id INTEGER REFERENCES categories(category_id),
+                amount REAL NOT NULL,
+                date TEXT NOT NULL,
+                description TEXT
+            )
+        """)
+  else:
+    cursor.execute("""
+            CREATE TABLE IF NOT EXISTS farms (
+                farm_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                farm_name TEXT UNIQUE NOT NULL,
+                location TEXT
+            )
+        """)
+    cursor.execute("""
+            CREATE TABLE IF NOT EXISTS categories (
+                category_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                category_name TEXT NOT NULL,
+                type TEXT CHECK(type IN ('Income', 'Expenditure')) NOT NULL,
+                sector TEXT CHECK(sector IN ('Crops', 'Livestock', 'General')) NOT NULL
+            )
+        """)
+    cursor.execute("""
+            CREATE TABLE IF NOT EXISTS transactions (
+                transaction_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                farm_id INTEGER,
+                category_id INTEGER,
+                amount REAL NOT NULL,
+                date TEXT NOT NULL,
+                description TEXT,
+                FOREIGN KEY (farm_id) REFERENCES farms (farm_id),
+                FOREIGN KEY (category_id) REFERENCES categories (category_id)
+            )
+        """)
 
-  cursor.execute("""
-        CREATE TABLE IF NOT EXISTS transactions (
-            transaction_id INTEGER PRIMARY KEY AUTOINCREMENT,
-            farm_id INTEGER,
-            category_id INTEGER,
-            amount REAL NOT NULL,
-            date TEXT NOT NULL,
-            description TEXT,
-            FOREIGN KEY (farm_id) REFERENCES farms (farm_id),
-            FOREIGN KEY (category_id) REFERENCES categories (category_id)
-        )
-    """)
-
-  # Seed your 5 specific farms
+  # Seed initial farms
   farms = [
       ("Mavui", "Location 1"),
       ("Kasong'e", "Location 2"),
@@ -53,12 +93,18 @@ def initialize_database():
       ("TT", "Location 4"),
       ("Kairungu", "Location 5"),
   ]
-  cursor.executemany(
-      """
-        INSERT OR IGNORE INTO farms (farm_name, location) VALUES (?, ?)
-    """,
-      farms,
-  )
+  for f_name, f_loc in farms:
+    if is_postgres:
+      cursor.execute(
+          "INSERT INTO farms (farm_name, location) VALUES (%s, %s) ON CONFLICT"
+          " (farm_name) DO NOTHING",
+          (f_name, f_loc),
+      )
+    else:
+      cursor.execute(
+          "INSERT OR IGNORE INTO farms (farm_name, location) VALUES (?, ?)",
+          (f_name, f_loc),
+      )
 
   # Seed categories
   categories = [
@@ -73,67 +119,55 @@ def initialize_database():
       ("Equipment & Maintenance", "Expenditure", "General"),
       ("Utilities (Water/Power)", "Expenditure", "General"),
   ]
-  cursor.executemany(
-      """
-        INSERT OR IGNORE INTO categories (category_name, type, sector) VALUES (?, ?, ?)
-    """,
-      categories,
-  )
+  for c_name, c_type, c_sec in categories:
+    if is_postgres:
+      cursor.execute(
+          "INSERT INTO categories (category_name, type, sector) VALUES (%s,"
+          " %s, %s) ON CONFLICT DO NOTHING",
+          (c_name, c_type, c_sec),
+      )
+    else:
+      cursor.execute(
+          "INSERT OR IGNORE INTO categories (category_name, type, sector)"
+          " VALUES (?, ?, ?)",
+          (c_name, c_type, c_sec),
+      )
 
   conn.commit()
-  conn.close()
+  cursor.close()
 
 
-# Initialize DB on load
 initialize_database()
 
 # --- STREAMLIT UI ---
-st.set_page_config(
-    page_title="Multi-Farm Tracker", page_icon="🌾", layout="wide"
+st.title("🌾 Multi-Farm Management Dashboard (Live Sync)")
+st.write(
+    "Any updates made by any team member instantly reflect here for everyone."
 )
 
-st.title("🌾 Multi-Farm Management Dashboard")
-st.markdown(
-    "Track expenditures, incomes, and net profits across Mavui, Kasong'e,"
-    " Kithambioni, TT, and Kairungu."
-)
-
-# Sidebar Navigation
 menu = st.sidebar.selectbox(
     "Navigation", ["Dashboard & Reports", "Add Transaction", "Manage Data"]
 )
+conn = get_cloud_connection()
 
-conn = get_connection()
-
-# Fetch dropdown options for farms
 farms_df = pd.read_sql("SELECT farm_name FROM farms", conn)
 
 if menu == "Dashboard & Reports":
-  st.header("📊 Financial Summary")
+  st.header("📊 Live Financial Summary")
 
-  # Fetch transactions with joined data
   query = """
-        SELECT 
-            f.farm_name,
-            c.type,
-            c.sector,
-            t.amount,
-            t.date,
-            c.category_name,
-            t.description
-        FROM transactions t
-        JOIN farms f ON t.farm_id = f.farm_id
+        SELECT f.farm_name, c.type, c.sector, t.amount, t.date, c.category_name, t.description 
+        FROM transactions t 
+        JOIN farms f ON t.farm_id = f.farm_id 
         JOIN categories c ON t.category_id = c.category_id
     """
   df = pd.read_sql(query, conn)
 
   if df.empty:
     st.info(
-        "No transactions recorded yet. Go to 'Add Transaction' to log your first"
-        " entry."
+        "No transactions recorded yet. Go to 'Add Transaction' to log an entry."
     )
   else:
-    # High-level metrics
     total_income = df[df["type"] == "Income"]["amount"].sum()
     total_exp = df[df["type"] == "Expenditure"]["amount"].sum()
     net_profit = total_income - total_exp
@@ -144,8 +178,6 @@ if menu == "Dashboard & Reports":
     col3.metric("Net Profit", f"KSH{net_profit:,.2f}")
 
     st.markdown("---")
-
-    # Pivot table breakdown by Farm
     st.subheader("Performance by Farm Location")
     pivot = (
         df.pivot_table(
@@ -154,31 +186,34 @@ if menu == "Dashboard & Reports":
         .fillna(0)
         .reset_index()
     )
-
     if "Income" not in pivot.columns:
       pivot["Income"] = 0
     if "Expenditure" not in pivot.columns:
       pivot["Expenditure"] = 0
-
     pivot["Net Profit"] = pivot["Income"] - pivot["Expenditure"]
 
-    # Display as a formatted table
-    st.dataframe(pivot.style.format({"Income": "KSH{:,.2f}", "Expenditure": "KSH{:,.2f}", "Net Profit": "KSH{:,.2f}"}), use_container_width=True)
+    st.dataframe(
+        pivot.style.format({
+            "Income": "KSH{:,.2f}",
+            "Expenditure": "KSH{:,.2f}",
+            "Net Profit": "KSH{:,.2f}",
+        }),
+        use_container_width=True,
+    )
 
-    # Detailed logs
     st.subheader("Recent Transactions Log")
-    st.dataframe(df.sort_values(by="date", ascending=False), use_container_width=True)
+    st.dataframe(
+        df.sort_values(by="date", ascending=False), use_container_width=True
+    )
 
 elif menu == "Add Transaction":
   st.header("➕ Record Income or Expenditure")
 
-  # Let's keep transaction type outside the form so it refreshes instantly when clicked
   selected_farm = st.selectbox(
       "Select Farm Location", farms_df["farm_name"].tolist()
   )
   transaction_type = st.radio("Transaction Type", ["Income", "Expenditure"])
 
-  # Strict separation of categories based on selection
   if transaction_type == "Income":
     filtered_cats = ["Crop Sales", "Livestock & Produce Sales"]
   else:
@@ -201,31 +236,37 @@ elif menu == "Add Transaction":
         "Description / Notes (Optional)",
         placeholder="e.g., Bought fertilizer for Mavui",
     )
-
     submit = st.form_submit_button("Save Transaction")
 
     if submit:
       cursor = conn.cursor()
-      f_id = cursor.execute(
-          "SELECT farm_id FROM farms WHERE farm_name = ?", (selected_farm,)
-      ).fetchone()[0]
-      c_id = cursor.execute(
-          "SELECT category_id FROM categories WHERE category_name = ?",
-          (selected_category,),
-      ).fetchone()[0]
+      ph = "%s" if not hasattr(conn, "isolation_level") else "?"
 
       cursor.execute(
-          """
-                INSERT INTO transactions (farm_id, category_id, amount, date, description)
-                VALUES (?, ?, ?, ?, ?)
-            """,
-          (f_id, c_id, amount, str(date), description),
+          f"SELECT farm_id FROM farms WHERE farm_name = {ph}", (selected_farm,)
+      )
+      f_id = cursor.fetchone()[0]
+
+      cursor.execute(
+          f"SELECT category_id FROM categories WHERE category_name = {ph}",
+          (selected_category,),
+      )
+      c_id = cursor.fetchone()[0]
+
+      insert_query = f"""
+                INSERT INTO transactions (farm_id, category_id, amount, date, description) 
+                VALUES ({ph}, {ph}, {ph}, {ph}, {ph})
+            """
+      cursor.execute(
+          insert_query, (f_id, c_id, amount, str(date), description)
       )
       conn.commit()
+      cursor.close()
       st.success(
           f"Successfully recorded amount {amount:,.2f} under"
           f" {selected_category} for {selected_farm}!"
       )
+      st.rerun()
 
 elif menu == "Manage Data":
   st.header("⚙️ Farm & Data Management")
@@ -233,63 +274,37 @@ elif menu == "Manage Data":
   farms_full = pd.read_sql("SELECT * FROM farms", conn)
   st.dataframe(farms_full, use_container_width=True)
 
-  st.markdown("### Update Farm Details")
-  with st.form("update_farm"):
-    f_to_update = st.selectbox(
-        "Choose Farm to Update", farms_full["farm_name"].tolist()
-    )
-    new_name = st.text_input("New Farm Name")
-    new_loc = st.text_input("New Location/Region")
-    update_btn = st.form_submit_button("Update Details")
+  st.markdown("---")
+  st.subheader("🗑️ Delete a Transaction")
 
-    if update_btn and new_name:
+  query = """
+        SELECT t.transaction_id, f.farm_name, c.type, c.category_name, t.amount, t.date 
+        FROM transactions t 
+        JOIN farms f ON t.farm_id = f.farm_id 
+        JOIN categories c ON t.category_id = c.category_id 
+        ORDER BY t.date DESC
+    """
+  records_df = pd.read_sql(query, conn)
+
+  if not records_df.empty:
+    options = {
+        f"ID {r.transaction_id} | {r.farm_name} | {r.type} - {r.category_name} | KSH {r.amount:,.2f} ({r.date})": r.transaction_id
+        for _, r in records_df.iterrows()
+    }
+    selected_record = st.selectbox(
+        "Select a transaction to delete", options=list(options.keys())
+    )
+
+    if st.button("Delete Transaction", type="primary"):
+      record_id = options[selected_record]
       cursor = conn.cursor()
+      ph = "%s" if not hasattr(conn, "isolation_level") else "?"
       cursor.execute(
-          "UPDATE farms SET farm_name = ?, location = ? WHERE farm_name = ?",
-          (new_name, new_loc, f_to_update),
+          f"DELETE FROM transactions WHERE transaction_id = {ph}", (record_id,)
       )
       conn.commit()
-      st.success("Farm details updated successfully! Please refresh.")
-
-conn.close()
-# --- DELETE TRANSACTION SECTION ---
-st.markdown("---")
-st.subheader("🗑️ Delete a Transaction")
-
-# Connect to database
-conn = get_connection()
-cursor = conn.cursor()
-
-# Fetch transactions with proper table joins matching your database
-query = """
-    SELECT t.transaction_id, f.farm_name, c.type, c.category_name, t.amount, t.date 
-    FROM transactions t 
-    JOIN farms f ON t.farm_id = f.farm_id 
-    JOIN categories c ON t.category_id = c.category_id
-    ORDER BY t.date DESC
-"""
-cursor.execute(query)
-records = cursor.fetchall()
-
-if records:
-  # Create a clean dropdown list mapping transaction details to their unique ID
-  options = {
-      f"ID {r[0]} | {r[1]} | {r[2]} - {r[3]} | ${r[4]:,.2f} ({r[5]})": r[0]
-      for r in records
-  }
-  selected_record = st.selectbox(
-      "Select a transaction to delete", options=list(options.keys())
-  )
-
-  if st.button("Delete Transaction", type="primary"):
-    record_id = options[selected_record]
-    cursor.execute(
-        "DELETE FROM transactions WHERE transaction_id = ?", (record_id,)
-    )
-    conn.commit()
-    st.success(f"Successfully deleted transaction ID {record_id}!")
-    st.rerun()
-else:
-  st.info("No transactions available to delete.")
-
-conn.close()
+      cursor.close()
+      st.success(f"Successfully deleted transaction ID {record_id}!")
+      st.rerun()
+  else:
+    st.info("No transactions available to delete.")
